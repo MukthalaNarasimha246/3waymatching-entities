@@ -22,6 +22,8 @@ from fastapi.security import OAuth2PasswordBearer
 from utility import apiResponse, verify_token
 from dotenv import load_dotenv
 import os
+from datetime import datetime
+
 
 load_dotenv()
 
@@ -526,7 +528,7 @@ def get_projects(id: int, token: str = Depends(oauth2_scheme)):
     return apiResponse(payload=projects, status_code=status.HTTP_200_OK)
 
 
-@app.get("/users/by-projects")
+@app.get("/users/by-projects/{project_ids}")
 def get_users_by_projects(project_ids: str = "",token: str = Depends(oauth2_scheme)):
     try:
         if not project_ids:
@@ -833,3 +835,174 @@ def update_project_manager(project_id: int, manager_id: int):
     finally:
         cur.close()
         conn.close()
+
+
+
+
+@app.get("/assign_batch/assign_to")
+def get_assign_batch_by_assign_to(assign_to: str, request: Request):
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        query = "SELECT * FROM assign_batch WHERE assign_to = %s"
+        cur.execute(query, (assign_to,))
+        records = cur.fetchall()
+
+        return {
+            "status": True,
+            "count": len(records),
+            "data": records
+        }
+
+    except Exception as e:
+        return {"status": False, "error": str(e)}
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+
+class AssignBatchRequest(BaseModel):
+    batch_id: str
+    assign: str
+    assign_to: str
+    project_id: str
+    token: str
+
+@app.post("/assign_batch")
+async def assign_batch(request: Request, payload: AssignBatchRequest):
+ 
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            SELECT * 
+            FROM assign_batch
+            WHERE batch_id = %s;
+        """, (payload.batch_id,))
+
+        batch_id_exist = cur.fetchone()
+
+        if batch_id_exist:
+            raise HTTPException(status_code=400, detail="Batch is Already Assigned")
+
+
+
+        # ✅ 2) Check if same user already has this batch assignment
+        cur.execute("""
+            SELECT id FROM assign_batch
+            WHERE batch_id = %s AND assign_to = %s;
+        """, (payload.batch_id, payload.assign_to))
+
+        exists = cur.fetchone()
+        if exists:
+            raise HTTPException(status_code=400, detail="User already assigned to this batch.")
+
+        # ✅ 3) Insert new assignment
+        cur.execute("""
+            INSERT INTO assign_batch 
+            (batch_id, assign, assign_to, project_id, token, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id;
+        """, (
+            payload.batch_id,
+            payload.assign,
+            payload.assign_to,
+            payload.project_id,
+            payload.token,
+            datetime.now()
+        ))
+
+        new_id = cur.fetchone()[0]
+      
+        conn.commit()
+
+        return {
+            "message": "Batch assigned successfully",
+            "assigned_id": new_id
+        }
+
+    except HTTPException as e:
+        raise e
+
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.post("/unassign_batch")
+async def unassign_batch(payload: dict):
+    batch_id = payload.get("batch_id")
+    assign_to = payload.get("assign_to")
+
+    if not batch_id or not assign_to:
+        raise HTTPException(status_code=400, detail="batch_id and assign_to are required")
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    try:
+        # ✅ Check if record exists
+        cur.execute("""
+            SELECT id FROM assign_batch
+            WHERE batch_id = %s AND assign_to = %s;
+        """, (batch_id, assign_to))
+
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Assignment not found")
+
+        # ✅ Delete the row
+        cur.execute("""
+            DELETE FROM assign_batch
+            WHERE batch_id = %s AND assign_to = %s;
+        """, (batch_id, assign_to))
+
+        conn.commit()
+
+        return {"message": "Batch unassigned successfully"}
+
+    except HTTPException as e:
+        raise e
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        conn.close()
+
+
+
+
+@app.get("/get_all_assignments")
+async def get_all_assignments():
+    conn = get_db_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        cur.execute("""
+            SELECT 
+                *
+            FROM assign_batch
+            ORDER BY id DESC;
+        """)
+
+        data = cur.fetchall()
+
+        return {
+            "message": "All batch assignments fetched successfully",
+            "payload": data
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        conn.close()
+

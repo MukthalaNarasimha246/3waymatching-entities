@@ -49,7 +49,7 @@ def login(username: str = Form(...), password: str = Form(...)):
         print('Taoken',token,'token')
         print(token,'access token......')
         (6, 'Narasimha', 'Mukthala.Narasimha@in.ey.com', 'test@123', 'user', True)
-        return  {"access_token": token,'status_code':200, "user_id": result[0],  'name':result[1],"role": result[4],'message':'Sucessfully Login','status_code':200} 
+        return  {"access_token": token,'status_code':200, "user_id": result[0],  'name':result[1],"role": result[5],'message':'Sucessfully Login','status_code':200} 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

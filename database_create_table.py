@@ -80,7 +80,10 @@ CREATE TABLE IF NOT EXISTS public.image_duplicates (
     similarity_image TEXT,
     similarity_status TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    pdf_ref_id VARCHAR
+    pdf_ref_id VARCHAR,
+    review_status VARCHAR(100),  
+    review_remark TEXT    
+
 );
 
 -- Table: public.invoice_asset_details
@@ -337,7 +340,8 @@ CREATE TABLE IF NOT EXISTS public.pdf_conversion_hypotus (
     num_images INTEGER NOT NULL,
     status VARCHAR(50) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    batchid BIGINT
+    batchid BIGINT,
+    review_status VARCHAR(50)
 );
 
 -- Table: po_details
