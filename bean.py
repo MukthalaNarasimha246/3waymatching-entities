@@ -77,9 +77,43 @@ class UserLogin(BaseModel):
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    llm_type: str
     entity_id: int
 
 
 class UserLogin(BaseModel):
     username: str
-    password: str    
+    password: str  
+
+
+
+
+class Microservice(BaseModel):
+    id: int
+    name: str
+    description: str
+    active: bool
+
+class MicroserviceCreate(BaseModel):
+    name: str
+    description: str
+    active: bool = True
+
+
+
+
+# -------------------------------
+# MODELS
+# -------------------------------
+class PromptCreate(BaseModel):
+    category: str
+    config: dict       # example: {"schema": {...}}
+
+class PromptUpdate(BaseModel):
+    config: dict
+
+
+
+
+class UploadTypeUpdate(BaseModel):
+    upload_type: str | None

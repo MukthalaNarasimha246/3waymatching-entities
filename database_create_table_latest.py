@@ -53,31 +53,6 @@ CREATE TABLE invoice_duplicates_check (
 );
 
 
-CREATE TABLE IF NOT EXISTS public.ewaybill_details
-(
-    id integer ,
-    ewaybill_no TEXT ,
-    generated_by TEXT ,
-    irn TEXT ,
-    gstin_supplier TEXT ,
-    vendor_name TEXT ,
-    place_of_dispatch TEXT ,
-    gstin_recipient TEXT ,
-    client_name TEXT ,
-    place_of_delivery TEXT ,
-    document_no TEXT ,
-    document_date date,
-    value_of_goods numeric(15,2),
-    hsn_code TEXT ,
-    transporter TEXT ,
-    ewaybill_date character varying ,
-    CONSTRAINT ewaybill_details_pkey PRIMARY KEY (id)
-);
-
-
-
-
-
 -- Table: public.image_classification_hypotus
 CREATE TABLE IF NOT EXISTS public.image_classification_hypotus (
     id SERIAL PRIMARY KEY,
@@ -89,8 +64,7 @@ CREATE TABLE IF NOT EXISTS public.image_classification_hypotus (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     batchid BIGINT,
     mapping_id VARCHAR,
-    is_hitl BOOLEAN DEFAULT FALSE,
-    is_extracted BOOLEAN DEFAULT FALSE
+    is_hitl BOOLEAN DEFAULT FALSE
 );
 
 -- Table: public.image_duplicates
@@ -367,8 +341,7 @@ CREATE TABLE IF NOT EXISTS public.pdf_conversion_hypotus (
     status VARCHAR(50) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     batchid BIGINT,
-    review_status VARCHAR(50),
-    file_id VARCHAR(50)
+    review_status VARCHAR(50)
 );
 
 -- Table: po_details
@@ -391,9 +364,7 @@ CREATE TABLE IF NOT EXISTS public.po_details (
     vendor_name VARCHAR(255),
     supplier_gstin VARCHAR(15),
     buyer_gstin VARCHAR(15),
-    delivery_location VARCHAR(255),
-    batch_id VARCHAR(100),
-    po_status VARCHAR(100)
+    delivery_location VARCHAR(255)
 );
 
 -- Table: po_billto
@@ -1384,6 +1355,7 @@ END;
 $$;
 
 
+
 CREATE OR REPLACE FUNCTION compare_invoice_ewaybill_by_number(p_invoice_number TEXT)
 RETURNS TABLE (
     invoice_number TEXT,
@@ -1404,7 +1376,6 @@ RETURNS TABLE (
     overall_status TEXT
 )
 LANGUAGE plpgsql
-AS $$
 DECLARE
     v_invoice invoice_details%ROWTYPE;
     v_ewaybill ewaybill_details%ROWTYPE;
@@ -1412,7 +1383,7 @@ DECLARE
     match_threshold CONSTANT NUMERIC := 80.0;
 
     s1 NUMERIC;
-    s2 NUMERIC; 
+    s2 NUMERIC;
     s3 NUMERIC;
     s4 NUMERIC;
     s5 NUMERIC;
@@ -1466,7 +1437,7 @@ BEGIN
             ELSE 'no match'
         END AS overall_status;
 END;
-$$;
+$BODY$;
 
 
 
@@ -1476,7 +1447,7 @@ RETURNS TABLE (
     status TEXT
 )
 LANGUAGE plpgsql
-AS $$
+AS $BODY$
 BEGIN
     RETURN QUERY
     SELECT * FROM (
@@ -1527,7 +1498,7 @@ BEGIN
             ) THEN 'Missing' ELSE 'Present' END)
     ) AS result(field_name, status);
 END;
-$$;
+$BODY$;
 
 CREATE OR REPLACE FUNCTION compute_score(a TEXT, b TEXT)
 RETURNS NUMERIC
@@ -1545,11 +1516,12 @@ BEGIN
         );
     END IF;
 END;
-$$;
+$BODY$;
 
-CREATE OR REPLACE FUNCTION generate_invoice_checklist(p_invoice_id INT)
+
+CREATE OR REPLACE FUNCTION generate_invoice_checklist(p_invoice_id INTEGER)
 RETURNS TABLE (
-    invoice_id INT,
+    invoice_id INTEGER,
     invoice_number TEXT,
     duplicate_invoice TEXT,
     invoice_date DATE,
@@ -1558,105 +1530,137 @@ RETURNS TABLE (
     lineitem_total NUMERIC(20,2),
     lineitem_values TEXT,
     invoice_total_check TEXT,
-    vendor_name TEXT,
+    invoice_vendor_name TEXT,
     master_vendor_name TEXT,
     vendorname_check TEXT,
-    supplier_gstin TEXT,
-    po_supplier_gstin TEXT,
+    supplier_gstin_invoice TEXT,
+    supplier_gstin_po TEXT,
     supplier_gstin_check TEXT,
-    buyer_gstin TEXT,
-    po_buyer_gstin TEXT,
+    buyer_gstin_invoice TEXT,
+    buyer_gstin_po TEXT,
     buyer_gstin_check TEXT,
     supplier_pan TEXT,
     master_pan TEXT,
     pan_check TEXT,
     gstin_pan_check TEXT,
-    master_gstin TEXT,
+    gstin_vendor_master TEXT,
     gstin_invoice_master_check TEXT,
     invoice_po_date_check TEXT,
     overall_status TEXT
 )
 LANGUAGE plpgsql
-AS $$
 DECLARE
     v_invoice RECORD;
     v_po RECORD;
+    v_vm RECORD;
     v_total_lineitems NUMERIC(20,2) := 0;
     v_values_list TEXT := '';
     v_dup_count INT := 0;
-
+    v_vendor_sim_ratio FLOAT := 0;
+    v_vendorname_check TEXT := 'no match';
+    v_gstin_invoice_master_check TEXT := 'no match';
     v_invoice_total_check TEXT := 'no match';
     v_supplier_gstin_check TEXT := 'no match';
     v_buyer_gstin_check TEXT := 'no match';
-    v_vendorname_check TEXT := 'no match';
-    v_pan_check TEXT := 'not available';
-    v_gstin_pan_check TEXT := 'not available';
-    v_gstin_invoice_master_check TEXT := 'not available';
+    v_pan_check TEXT := 'no match';
+    v_gstin_pan_check TEXT := 'no match';
     v_invoice_po_date_check TEXT := 'no match';
     v_overall_status TEXT := 'match';
 BEGIN
-    -- Fetch invoice
-    SELECT * INTO v_invoice
-    FROM invoice_details inv
+    -- Fetch the invoice
+    SELECT * INTO v_invoice 
+    FROM invoice_details inv 
     WHERE inv.invoice_id = p_invoice_id;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Invoice ID % not found', p_invoice_id;
     END IF;
 
-    -- Duplicate count
+    -- Count duplicate invoice numbers
     SELECT COUNT(*) INTO v_dup_count
     FROM invoice_details inv
     WHERE inv.invoice_number = v_invoice.invoice_number;
 
-    -- Fetch PO
-    SELECT * INTO v_po
-    FROM po_details po
+    -- Fetch PO details
+    SELECT * INTO v_po 
+    FROM po_details po 
     WHERE po.po_number = v_invoice.po_ref;
+
+    -- Fetch vendor master by GSTIN first
+    SELECT * INTO v_vm
+    FROM vpr_vendor_master vm
+    WHERE vm.gstin = v_invoice.supplier_gstin
+      AND TRIM(vm.master) <> ''
+    LIMIT 1;
+
+    -- Fallback: fuzzy match if vendor not found
+    IF v_vm IS NULL THEN
+        SELECT * INTO v_vm
+        FROM vpr_vendor_master vm
+        WHERE TRIM(vm.master) <> ''
+        ORDER BY similarity(vm.master, v_invoice.company_name) DESC
+        LIMIT 1;
+    END IF;
 
     -- Sum line items
     SELECT
-        SUM(li.total_value),
-        COALESCE(STRING_AGG(li.total_value::TEXT, ','), '')
+        SUM(li.total_value) AS total_sum,
+        STRING_AGG(li.total_value::TEXT, ',') AS values_csv
     INTO
         v_total_lineitems,
         v_values_list
     FROM invoice_lineitems li
     WHERE li.invoice_id = p_invoice_id;
 
-    -- Invoice total check
-    IF v_invoice.total_amount IS NOT NULL
-       AND v_total_lineitems IS NOT NULL
+    -- Vendor name similarity
+    IF COALESCE(TRIM(v_invoice.company_name), '') <> '' AND COALESCE(TRIM(v_vm.master), '') <> '' THEN
+        SELECT similarity(v_invoice.company_name, v_vm.master) INTO v_vendor_sim_ratio;
+        v_vendorname_check := ROUND(v_vendor_sim_ratio * 100)::TEXT || '%';
+    END IF;
+
+    -- GSTIN invoice vs vendor master
+    IF v_invoice.supplier_gstin = v_vm.gstin THEN
+        v_gstin_invoice_master_check := 'yes';
+    END IF;
+
+    -- Invoice total vs line item total
+    IF v_invoice.total_amount IS NOT NULL 
+       AND v_total_lineitems IS NOT NULL 
        AND v_invoice.total_amount = v_total_lineitems THEN
         v_invoice_total_check := 'yes';
     END IF;
 
-    -- Supplier GSTIN check
-    IF v_invoice.supplier_gstin IS NOT NULL
-       AND v_po.supplier_gstin IS NOT NULL
+    -- Supplier GSTIN check with PO
+    IF v_invoice.supplier_gstin IS NOT NULL 
+       AND v_po.supplier_gstin IS NOT NULL 
        AND v_invoice.supplier_gstin = v_po.supplier_gstin THEN
         v_supplier_gstin_check := 'yes';
     END IF;
 
     -- Buyer GSTIN check
-    IF v_invoice.buyer_gstin IS NOT NULL
-       AND v_po.buyer_gstin IS NOT NULL
+    IF v_invoice.buyer_gstin IS NOT NULL 
+       AND v_po.buyer_gstin IS NOT NULL 
        AND v_invoice.buyer_gstin = v_po.buyer_gstin THEN
         v_buyer_gstin_check := 'yes';
     END IF;
 
-    -- Invoice date <= PO date
-    IF v_invoice.invoice_date IS NOT NULL
-       AND v_po.po_date IS NOT NULL
-       AND v_invoice.invoice_date <= v_po.po_date THEN
-        v_invoice_po_date_check := 'yes';
+    -- PAN check
+    IF v_vm.pan IS NOT NULL THEN
+        v_pan_check := 'yes';
     END IF;
 
-    -- Vendor name check
-    IF v_invoice.vendor_name IS NOT NULL
-       AND v_po.vendor_name IS NOT NULL
-       AND TRIM(v_invoice.vendor_name) = TRIM(v_po.vendor_name) THEN
-        v_vendorname_check := '100%';
+    -- GSTIN contains PAN check
+    IF v_vm.pan IS NOT NULL 
+       AND v_invoice.supplier_gstin IS NOT NULL 
+       AND POSITION(v_vm.pan IN v_invoice.supplier_gstin) > 0 THEN
+        v_gstin_pan_check := 'yes';
+    END IF;
+
+    -- Invoice date <= PO date check
+    IF v_invoice.invoice_date IS NOT NULL 
+       AND v_po.po_date IS NOT NULL 
+       AND v_invoice.invoice_date <= v_po.po_date THEN
+        v_invoice_po_date_check := 'yes';
     END IF;
 
     -- Determine overall status
@@ -1664,12 +1668,15 @@ BEGIN
         v_invoice_total_check,
         v_supplier_gstin_check,
         v_buyer_gstin_check,
+        v_pan_check,
+        v_gstin_pan_check,
+        v_gstin_invoice_master_check,
         v_invoice_po_date_check
     ) THEN
         v_overall_status := 'no match';
     END IF;
 
-    -- Final result
+    -- Return single structured row
     RETURN QUERY
     SELECT
         v_invoice.invoice_id,
@@ -1682,24 +1689,24 @@ BEGIN
         COALESCE(v_values_list, ''),
         v_invoice_total_check,
         v_invoice.vendor_name::TEXT,
-        NULL,                     -- master_vendor_name placeholder
-        v_vendorname_check,
+        v_vm.master::TEXT,
+        COALESCE(v_vendorname_check, 'no match'),
         v_invoice.supplier_gstin::TEXT,
         v_po.supplier_gstin::TEXT,
         v_supplier_gstin_check,
         v_invoice.buyer_gstin::TEXT,
         v_po.buyer_gstin::TEXT,
         v_buyer_gstin_check,
-        NULL,                     -- supplier_pan
-        NULL,                     -- master_pan
+        NULL,  -- supplier_pan placeholder
+        v_vm.pan::TEXT,
         v_pan_check,
         v_gstin_pan_check,
-        NULL,                     -- master_gstin
+        v_vm.gstin::TEXT,
         v_gstin_invoice_master_check,
         v_invoice_po_date_check,
         v_overall_status;
 END;
-$$;
+$BODY$;
 
 CREATE OR REPLACE FUNCTION test_get_metadata_checklist(invoice_id_input INTEGER)
 RETURNS TABLE (
@@ -1711,7 +1718,7 @@ RETURNS TABLE (
     notes TEXT
 )
 LANGUAGE plpgsql
-AS $$
+AS $BODY$
 BEGIN
   RETURN QUERY
   SELECT
@@ -1827,13 +1834,7 @@ BEGIN
       )
   ) AS t(field_name, po, inv, mrn);
 END;
-$$;
-
-
-
-
-
-
+$BODY$;
     """
 
     try:

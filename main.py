@@ -12,7 +12,7 @@ from starlette import status
 import json
 from fastapi.middleware.cors import CORSMiddleware
 from auth import  router as auth_router
-from bean import ClientExcelAccessCreate, EntityCreate, ExcelExportCreate, FileUploadCreate, ModelCreate, OcrResultCreate, ProjectCreate, ProjectStatusUpdate, PromptCreate, ReviewCreate, UserCreate, UserEntityAccessCreate, UserLogin, project
+from bean import ClientExcelAccessCreate, EntityCreate, ExcelExportCreate, FileUploadCreate, MicroserviceCreate, ModelCreate, OcrResultCreate, ProjectCreate, ProjectStatusUpdate, PromptCreate, PromptUpdate, ReviewCreate, UploadTypeUpdate, UserCreate, UserEntityAccessCreate, UserLogin, project
 from database_create_table import apply_schema_to_target_db
 from db_config import create_new_database
 from psycopg2.extras import RealDictCursor
@@ -136,21 +136,7 @@ def grant_user_entity_access(data: UserEntityAccessCreate,token: str = Depends(o
         cur.close()
         conn.close()
 
-@app.post("/prompts")
-def create_prompt(data: PromptCreate,token: str = Depends(oauth2_scheme)):
-    conn = get_db_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO prompts (entity_id, name, description, created_by)
-            VALUES (%s, %s, %s, %s) RETURNING id;
-        """, (data.entity_id, data.name, data.description, data.created_by))
-        prompt_id = cur.fetchone()[0]
-        conn.commit()
-        return  apiResponse(message='Prompt created successfully',payload=None,status_code=status.HTTP_200_OK)
-    finally:
-        cur.close()
-        conn.close()
+
 
 @app.post("/models")
 def create_model(data: ModelCreate,token: str = Depends(oauth2_scheme)):
@@ -327,26 +313,7 @@ def get_user_entity_access(token: str = Depends(oauth2_scheme)):
     data = cur.fetchall()
     cur.close(); conn.close()
     return apiResponse(payload= data,status_code=status.HTTP_200_OK)
-@app.get("/prompts")
-def get_prompts(token: str = Depends(oauth2_scheme)):
-    conn = get_db_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM prompts")
-    data = cur.fetchall()
-    cur.close(); conn.close()
-    return apiResponse(payload= data,status_code=status.HTTP_200_OK)
 
-@app.get("/prompts/{id}")
-def get_prompt(id: int,token: str = Depends(oauth2_scheme)):
-    conn = get_db_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM prompts WHERE id = %s", (id,))
-    data = cur.fetchone()
-    cur.close(); conn.close()
-    if data:
-        return apiResponse(payload= data,status_code=status.HTTP_200_OK)
-    else:
-        return apiResponse(message='User Not Found',status_code=status.HTTP_404_NOT_FOUND)
 
 @app.get("/client-access")
 def get_client_access(token: str = Depends(oauth2_scheme)):
@@ -444,11 +411,11 @@ def create_project(project: ProjectCreate,token: str = Depends(oauth2_scheme)):
 
     cur.execute(
         """
-        INSERT INTO projects (name, description, entity_id, db)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO projects (name, description, entity_id, db,llm_type)
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING *;
         """,
-        (project.name, project.description, project.entity_id, db_name)
+        (project.name, project.description, project.entity_id, db_name,project.llm_type)
     )
     new_project = cur.fetchone()
     create_new_database(db_name)
@@ -613,6 +580,7 @@ def get_users_by_project(project_id: int, entity_id: int = None,token: str = Dep
                 "name": row[1],
                 "email": row[2],
                 "role": row[3],
+                
                 "is_active": row[4],
                 "is_project_active": row[5],
                 "user_id": row[6],
@@ -639,6 +607,7 @@ def get_user_projects(user_id: int,token: str = Depends(oauth2_scheme)):
                    p.created_at,
                    p.updated_at,
                    p.db,
+                    p.llm_type,
                     ua.is_project_active
             FROM   projects p
             JOIN   user_entity_access_1 ua ON ua.project_id = p.id
@@ -656,7 +625,8 @@ def get_user_projects(user_id: int,token: str = Depends(oauth2_scheme)):
             "created_at": r[5].isoformat() if r[5] else None,
             "updated_at": r[6].isoformat() if r[6] else None,
             "db": r[7],
-            "is_project_active": r[8]
+            "is_project_active": r[9],
+            "llm_type": r[8]
         } for r in rows]
 
 
@@ -1005,4 +975,265 @@ async def get_all_assignments():
 
     finally:
         conn.close()
+
+
+# --------------------------
+# Micro Service Api 
+# --------------------------
+
+
+
+@app.get("/microservices")
+def get_microservices():
+    conn = get_db_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, name, description, active FROM microservices ORDER BY id")
+    rows = cur.fetchall()
+    print(rows)
+    cur.close()
+    conn.close()
+
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "description": r["description"],
+            "active": r["active"]
+        }
+        for r in rows
+    ]
+
+
+
+
+
+@app.post("/microservices")
+def add_microservice(service: MicroserviceCreate):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO microservices (name, description, active) VALUES (%s, %s, %s) RETURNING id",
+        (service.name, service.description, service.active)
+    )
+    new_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"id": new_id, "name": service.name, "description": service.description, "active": service.active}
+
+
+
+
+@app.patch("/microservices/{service_id}/toggle")
+def toggle_microservice(service_id: int):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    
+    # Check if service exists
+    cur.execute("SELECT id, name, description, active FROM microservices WHERE id=%s", (service_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Microservice not found")
+    
+    # Toggle active status
+    new_status = not row[3]
+    cur.execute("UPDATE microservices SET active=%s WHERE id=%s", (new_status, service_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    return {"id": row[0], "name": row[1], "description": row[2], "active": new_status}
+
+
+
+# --------------------------------------------------
+# 1️⃣ GET ALL PROMPTS (List)
+# --------------------------------------------------
+@app.get("/prompts")
+def get_prompts(token: str = Depends(oauth2_scheme)):
+    conn = get_db_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("SELECT id, category, config FROM prompt_config ORDER BY id")
+    data = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return data
+
+
+# --------------------------------------------------
+# 2️⃣ GET PROMPT BY CATEGORY (Show in Modal)
+# --------------------------------------------------
+@app.get("/prompts/{category}")
+def get_prompt_by_category(category: str):
+    conn = get_db_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("SELECT id, category, config FROM prompt_config WHERE category=%s", (category,))
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+
+    return row
+
+
+# --------------------------------------------------
+# 3️⃣ ADD NEW PROMPT
+# --------------------------------------------------
+@app.post("/prompts")
+def add_prompt(prompt: PromptCreate):
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO prompt_config (category, config)
+        VALUES (%s, %s)
+        RETURNING id
+        """,
+        (prompt.category, psycopg2.extras.Json(prompt.config))
+    )
+    new_id = cur.fetchone()[0]
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {"message": "Prompt added successfully", "id": new_id}
+
+
+# --------------------------------------------------
+# 4️⃣ UPDATE A PROMPT (Update Schema / Prompt Text)
+# --------------------------------------------------
+@app.put("/prompts/{category}")
+def update_prompt(category: str, payload: PromptUpdate):
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE prompt_config
+        SET config = %s
+        WHERE category = %s
+        RETURNING id
+        """,
+        (psycopg2.extras.Json(payload.config), category)
+    )
+
+    updated = cur.fetchone()
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+
+    return {"message": "Prompt updated successfully", "category": category}
+
+
+
+
+
+@app.get("/upload-config")
+def get_all_upload_config(token: str = Depends(oauth2_scheme)):
+    conn = get_db_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("SELECT * FROM upload_config ORDER BY id DESC")
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return rows
+
+
+
+
+
+@app.put("/upload-config/{id}")
+def update_upload_type(id: int, data: UploadTypeUpdate,token: str = Depends(oauth2_scheme)):
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM upload_config WHERE id=%s", (id,))
+    exists = cur.fetchone()
+
+    if not exists:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    cur.execute("""
+        UPDATE upload_config
+        SET upload_type = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+    """, (data.upload_type, id))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"message": "Upload type updated successfully"}
+
+
+
+
+
+
+
+
+
+@app.get("/doc-config")
+def get_all_upload_config(token: str = Depends(oauth2_scheme)):
+    conn = get_db_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("SELECT * FROM doc_config ORDER BY id DESC")
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return rows
+
+
+
+
+
+@app.put("/upload-config/{id}")
+def update_upload_type(id: int, data: UploadTypeUpdate,token: str = Depends(oauth2_scheme)):
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM upload_config WHERE id=%s", (id,))
+    exists = cur.fetchone()
+
+    if not exists:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    cur.execute("""
+        UPDATE upload_config
+        SET upload_type = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+    """, (data.upload_type, id))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"message": "Upload type updated successfully"}
 
